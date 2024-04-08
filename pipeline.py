@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 from skimage.io import imread
+from readlif.reader import LifFile
 import scipy.ndimage as ndi
 from scipy.stats import ttest_ind_from_stats
 from skimage.filters.thresholding import threshold_otsu
@@ -13,10 +14,13 @@ from scipy import signal
 from decimal import Decimal
 import numpy as np
 import copy
+from skimage import measure
 import tifffile
 import random
 import os
+import seaborn as sns
 import matplotlib
+import pandas as pd
 from skimage import img_as_float
 from skimage import exposure
 from tifffile import imwrite
@@ -25,11 +29,15 @@ from skimage.transform import warp, AffineTransform
 %matplotlib inline
 
 
+
 class experiment:
     def __init__(self,path,time_res,pixel_res,nbleach,sigma):
         self.file_name = path
         self.nbleach = nbleach
-        self.img = imread(self.file_name)
+        if type(path)==str:
+            self.img = imread(self.file_name)
+        else:
+            self.img=path
         self.nframes = np.shape(self.img)[0]
         self.time_res,self.pixel_res,self.nbleach = time_res,pixel_res,(nbleach-1)
         self.bleach_img = ndi.gaussian_filter(self.img[self.nbleach,:,:],sigma)
@@ -57,7 +65,7 @@ class experiment:
         self.img_nucseg=np.array(img_gamma)
   
     #### IMAGE SEGMENTATION ####
-    def segment_cell(self,thr_cell=0.5,cellsize_min=200,cellsize_max=20000000):
+    def segment_cell(self,thr_cell=0.4,cellsize_min=200,cellsize_max=20000000):
         self.prebleach_img_cellseg=self.img_cellseg[(self.nbleach-1),:,:]
         
         thresh = threshold_otsu(self.prebleach_img_cellseg)*thr_cell
@@ -74,7 +82,7 @@ class experiment:
             if size != np.max(sizes):
                 self.cellmask[self.cellmask==id] = 0
     
-    def segment_nucleus(self,thr_nuc=1,nucsize_min=200,nucsize_max=20000000):
+    def segment_nucleus(self,thr_nuc=1,nucsize_min=10000,nucsize_max=300000):
         self.prebleach_img_nucseg=self.img_nucseg[(self.nbleach-1),:,:]
         
         #thresholding
@@ -90,10 +98,20 @@ class experiment:
         #binary closing
         self.nucmask = ndi.binary_closing(self.nucmask,iterations=4)
         self.nucmask = ndi.label(self.nucmask)[0]
-        sizes = [(self.nucmask == x).sum() for x in np.unique(self.nucmask)[1:]]
-        for id,size in zip(np.unique(self.nucmask)[1:],sizes):
-            if size != np.max(sizes):
-                self.nucmask[self.nucmask==id] = 0
+        #sizes = [(self.nucmask == x).sum() for x in np.unique(self.nucmask)[1:]]
+        labels = measure.label(self.nucmask)
+        masks = [(labels == i) for i in np.unique(labels) if i != 0]
+        #if multiple nuclei are present, select only the most decreasing after bleach
+        ratio_min=1
+        idx=100000
+        for i in range(len(masks)):
+            size=len(self.bleach_img[masks[i]!=0])
+            ratio=np.mean(self.bleach_img[masks[i]!=0])/np.mean(self.prebleach_img[masks[i]!=0])
+            if size>=nucsize_min:
+                if ratio< ratio_min:
+                    ratio_min=ratio
+                    idx=i
+        self.nucmask[~masks[idx]]=0
 
     def getBleachedmask(self,sigma_b=2,beta=0.5,extra_pix=2,shift_x=0,thr_bleach=2.5,thr_nonbleach=1.5):
         # loop through the mask of condensates
@@ -114,28 +132,32 @@ class experiment:
                 temp_im_bleach[self.nucmask != id] = 0
                 temp_mask_prebleach[self.nucmask != id] = 0
                 temp_mask_bleach[self.nucmask != id] = 0
-              
-                # get radius and eccentricity
-                self.radius = ((regionprops(temp_mask_prebleach)[0].minor_axis_length+regionprops(temp_mask_prebleach)[0].major_axis_length)/2)*self.pixel_res
-                self.eccentricity = regionprops(temp_mask_prebleach)[0].eccentricity
-                self.cellmask[self.nucmask == id] = 0
-    
-                # if the prebleach/bleach has a FC of 2 or higher it will be considered bleach area
-                bleached_area=((temp_im_prebleach+1)/(temp_im_bleach+1))>thr_bleach
-                temp_bl_area=np.where(bleached_area, temp_im_prebleach, 0)
 
-                # if the prebleach/bleach has a FC of 1.5 or lower it will be considered non bleach area
-                non_bleached_area=((temp_im_prebleach+1)/(temp_im_bleach+1))<thr_nonbleach
-                temp_non_bl_area=np.where(non_bleached_area, temp_im_prebleach, 0)
+                if len(regionprops(temp_mask_prebleach))==0: # let's say the background changes too much, I want to avoid that my program select the background
+                    continue
+                
+                else:
+                    # get radius and eccentricity
+                    self.radius = ((regionprops(temp_mask_prebleach)[0].minor_axis_length+regionprops(temp_mask_prebleach)[0].major_axis_length)/2)*self.pixel_res
+                    self.eccentricity = regionprops(temp_mask_prebleach)[0].eccentricity
+                    #self.cellmask[self.nucmask == id] = 0
+        
+                    # if the prebleach/bleach has a FC of 2 or higher it will be considered bleach area
+                    bleached_area=((temp_im_prebleach+1)/(temp_im_bleach+1))>thr_bleach
+                    temp_bl_area=np.where(bleached_area, temp_im_prebleach, 0)
     
-                self.bleachmask[temp_bl_area!=0] = id
-                self.nonbleachmask[temp_non_bl_area!=0] = id
-                return (temp_im_prebleach+1)/(temp_im_bleach+1)
+                    # if the prebleach/bleach has a FC of 1.5 or lower it will be considered non bleach area
+                    non_bleached_area=((temp_im_prebleach+1)/(temp_im_bleach+1))<thr_nonbleach
+                    temp_non_bl_area=np.where(non_bleached_area, temp_im_prebleach, 0)
+        
+                    self.bleachmask[temp_bl_area!=0] = id
+                    self.nonbleachmask[temp_non_bl_area!=0] = id
+                    return (temp_im_prebleach+1)/(temp_im_bleach+1)
 
     def ROI_generation(self,ROI_area=0.25,n_ROIs=50):
         side,coords_bl,mask_bl=generate_ROI(self.img[0],self.bleachmask,ROI_area=ROI_area,n_ROIs=n_ROIs)
         _,coords_nbl,mask_nbl=generate_ROI(self.img[0],self.nonbleachmask,ROI_area=ROI_area,n_ROIs=n_ROIs,side=side)
-        cellmask_inverse=np.ones_like(self.cellmask)-(self.nucmask+self.cellmask)
+        cellmask_inverse=np.ones_like(self.cellmask)-self.cellmask
         _,coords_nc,mask_nc=generate_ROI(self.img[0],cellmask_inverse,ROI_area=ROI_area,n_ROIs=n_ROIs,side=side)
 
         self.bleached_roi=mask_bl
@@ -224,12 +246,16 @@ class experiment:
     ### IMAGE ANALYSIS
     def analysis_basics(self,norm=True):
         recovery_bleach=[]
+        non_bleach=[]
         for i in range(self.img.shape[0]):
             recovery_bleach.append((np.mean(self.img[i][self.bleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0]))/(np.mean(self.img[i][self.nonbleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0])))
+            non_bleach.append((np.mean(self.img[i][self.nonbleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0])))
         if norm==True:
             recovery_norm=[x/max(recovery_bleach) for x in recovery_bleach]
+            non_bleach_norm=[x/max(non_bleach) for x in non_bleach]
         else:
             recovery_norm=recovery_bleach
+            non_bleach_norm=non_bleach
         time_points=[0]
         count=0
         for i in range(10):
@@ -238,7 +264,12 @@ class experiment:
         for i in range(10,self.img.shape[0]-1):
             count=count+6.47
             time_points.append(count)
-        return recovery_norm,time_points
+        time_points=time_points[1:]
+        recovery_norm=recovery_norm[1:]
+        non_bleach_norm=non_bleach_norm[1:]
+        df=pd.DataFrame([recovery_norm+non_bleach_norm,time_points+time_points,['recovery' for x in range(len(recovery_norm))]+['non bleached' for x in range(len(non_bleach_norm))]],index=['FRAP (norm intensities)','t (s)','method'])
+        return df.T
+
 
 
 def plot_mask(raw,mask,mask2=None,mask3=None):
