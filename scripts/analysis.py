@@ -4,6 +4,7 @@ from readlif.reader import LifFile
 import scipy.ndimage as ndi
 from scipy.stats import ttest_ind_from_stats
 from skimage.filters.thresholding import threshold_otsu
+from skimage.filters import threshold_multiotsu
 from skimage.measure import regionprops
 from skimage.measure import find_contours
 from skimage.morphology import area_opening
@@ -38,6 +39,8 @@ class experiment:
             self.img = imread(self.file_name)
         else:
             self.img=path
+        #remove images with only 0 values
+        self.img=np.array([arr for arr in self.img if len(np.unique(arr))>1])
         self.nframes = np.shape(self.img)[0]
         self.time_res,self.pixel_res,self.nbleach = time_res,pixel_res,(nbleach-1)
         self.bleach_img = ndi.gaussian_filter(self.img[self.nbleach,:,:],sigma)
@@ -82,7 +85,6 @@ class experiment:
         #binary closing
         self.nucmask = ndi.binary_closing(self.nucmask,iterations=4)
         self.nucmask = ndi.label(self.nucmask)[0]
-        #sizes = [(self.nucmask == x).sum() for x in np.unique(self.nucmask)[1:]]
         labels = measure.label(self.nucmask)
         masks = [(labels == i) for i in np.unique(labels) if i != 0]
         #if multiple nuclei are present, select only the most decreasing after bleach
@@ -98,32 +100,39 @@ class experiment:
         self.nucmask[~masks[idx]]=0
         self.nucmask[self.nucmask>0.5]=1
 
-    def segment_cell(self,img=1,thr_cell=0.5,cellsize_min=60000,cellsize_max=1000000):    #thresholds based on empirical computation
+    def segment_cell(self,img='self',thr_cell=1,cellsize_min=80000,cellsize_max=1000000):    #thresholds based on empirical computation
         
-        if type(img)!=int:
-            self.prebleach_img_cellseg=img
-        else:
+        if type(img)==str:
             self.prebleach_img_cellseg=self.img_cellseg[(self.nbleach-1),:,:]
-            
-        thresh = threshold_otsu(self.prebleach_img_cellseg)*thr_cell
+        else:
+            self.prebleach_img_cellseg=img
+        
+        thresh = threshold_multiotsu(self.prebleach_img_cellseg)[0]*thr_cell
+        #thresh = threshold_otsu(self.prebleach_img_cellseg)*thr_cell
         self.cellmask = self.prebleach_img_cellseg > thresh
+        #binary closing
+        self.cellmask = ndi.binary_closing(self.cellmask,iterations=3)
         #removing objects with a low area
         self.cellmask=area_opening(self.cellmask,area_threshold=30000,connectivity=100)
         #fill holes
         self.cellmask = ndi.binary_fill_holes(self.cellmask)
-        #binary closing
-        self.cellmask = ndi.binary_closing(self.cellmask,iterations=3)
-        self.cellmask = ndi.label(self.cellmask)[0]
-        #if identified cell is actually the nucleus, repeat the pipeline with a lower alpha
-        if np.nonzero(self.nucmask)[0].shape[0]/np.nonzero(self.cellmask)[0].shape[0]>0.65:    #threshold defined empirically
-            thr_cell=thr_cell-0.05
-            self.segment_cell(thr_cell=thr_cell,cellsize_min=cellsize_min,cellsize_max=cellsize_max)
-        #remove objects with area ower than cellsize min
+        self.cellmask=measure.label(self.cellmask)
         self.cellmask[self.cellmask>0.5]=1
+        self.cellmask[self.cellmask<=0.5]=0
+
+        #remove objects with area ower than cellsize min
         sizes = [np.nonzero(self.cellmask == x)[0].shape[0] for x in np.unique(self.cellmask)[1:]]
         for id,size in zip(np.unique(self.cellmask)[1:],sizes):
             if size < cellsize_min:
                 self.cellmask[self.cellmask==id] = 0
+        
+        #if identified cell is actually the nucleus, repeat the pipeline with a lower alpha
+        if len(np.nonzero(exp.cellmask)[0])==0:
+            thr_cell=thr_cell-0.05
+            self.segment_cell(thr_cell=thr_cell,cellsize_min=cellsize_min,cellsize_max=cellsize_max)
+        elif np.nonzero(self.nucmask)[0].shape[0]/np.nonzero(self.cellmask)[0].shape[0]>0.4:    #threshold defined empirically
+            thr_cell=thr_cell-0.05
+            self.segment_cell(thr_cell=thr_cell,cellsize_min=cellsize_min,cellsize_max=cellsize_max)
         return self.cellmask
 
     
@@ -187,22 +196,7 @@ class experiment:
         '''identification of cell profile in each image of the series'''
         cells=[]
         for im in self.img_cellseg:
-            cellmask=self.segment_cell(img=im,thr_cell=0.5,cellsize_min=60000,cellsize_max=1000000)
-#            thresh = threshold_otsu(im)*thr_cell
-#            cellmask = im > thresh
-            #removing objects with a low area
-#            cellmask=area_opening(cellmask,area_threshold=30000,connectivity=100)
-            #fill holes
-#            cellmask = ndi.binary_fill_holes(cellmask)
-            #binary closing
-#            cellmask = ndi.binary_closing(cellmask)
-#            cellmask = ndi.label(cellmask)[0]
-#            sizes = [(cellmask == x).sum() for x in np.unique(cellmask)[1:]]
-            #remove objects with area ower than cellsize min
-#            for id,size in zip(np.unique(cellmask)[1:],sizes):
-#                if size < cellsize_min:
-#                    cellmask[cellmask==id] = 0
-#            im[cellmask == 0]=0
+            cellmask=self.segment_cell(img=im,thr_cell=0.5,cellsize_min=80000,cellsize_max=1000000)
             cells.append(cellmask)
         self.iso_cells=np.array(cells)       
         return thr_cell
