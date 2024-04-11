@@ -48,6 +48,7 @@ class experiment:
 
     #### IMAGE PREPARATION ####
     def image_preparation(self):
+        self.img_raw=self.img
         #normalization
         self.img=self.img/self.img.max()
         #adjustment
@@ -256,18 +257,30 @@ class experiment:
         
 
     ### IMAGE ANALYSIS
-    def analysis_basics(self,norm=True):
+    def analysis_basics(self,raw=False,tracking=True):
         recovery_bleach=[]
         non_bleach=[]
-        for i in range(self.img.shape[0]):
-            recovery_bleach.append((np.mean(self.img[i][self.bleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0]))/(np.mean(self.img[i][self.nonbleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0])))
-            non_bleach.append((np.mean(self.img[i][self.nonbleached_roi_aligned[i]!=0])-np.mean(self.img[i][self.noncell_roi_aligned[i]!=0])))
-        if norm==True:
-            recovery_norm=[x/max(recovery_bleach) for x in recovery_bleach]
-            non_bleach_norm=[x/max(non_bleach) for x in non_bleach]
+        bleach_mean=[]
+        nonbleach_mean=[]
+        bkg_mean=[]
+        if raw==True:
+            imgs=self.img_raw
         else:
-            recovery_norm=recovery_bleach
-            non_bleach_norm=non_bleach
+            imgs=self.img
+        for i in range(imgs.shape[0]):
+            if tracking==True:
+                recovery_bleach.append((np.mean(imgs[i][self.bleached_roi_aligned[i]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[i]!=0]))/(np.mean(imgs[0][self.nonbleached_roi_aligned[i]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[i]!=0])))
+                non_bleach.append((np.mean(imgs[i][self.nonbleached_roi_aligned[i]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[i]!=0]))/(np.mean(imgs[0][self.nonbleached_roi_aligned[i]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[i]!=0])))
+                bleach_mean.append(np.mean(imgs[i][self.bleached_roi_aligned[i]!=0]))
+                nonbleach_mean.append(np.mean(imgs[i][self.nonbleached_roi_aligned[i]!=0]))
+                bkg_mean.append(np.mean(imgs[i][self.noncell_roi_aligned[i]!=0]))
+            else:
+                recovery_bleach.append((np.mean(imgs[i][self.bleached_roi_aligned[0]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[0]!=0]))/(np.mean(imgs[0][self.nonbleached_roi_aligned[0]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[0]!=0])))
+                non_bleach.append((np.mean(imgs[i][self.nonbleached_roi_aligned[0]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[0]!=0]))/(np.mean(imgs[0][self.nonbleached_roi_aligned[0]!=0])-np.mean(imgs[i][self.noncell_roi_aligned[0]!=0])))
+                bleach_mean.append(np.mean(imgs[i][self.bleached_roi_aligned[0]!=0]))
+                nonbleach_mean.append(np.mean(imgs[i][self.nonbleached_roi_aligned[0]!=0]))
+                bkg_mean.append(np.mean(imgs[i][self.noncell_roi_aligned[0]!=0]))
+                
         time_points=[0]
         count=0
         for i in range(10):
@@ -277,11 +290,13 @@ class experiment:
             count=count+6.47
             time_points.append(count)
         time_points=time_points[1:]
-        recovery_norm=recovery_norm[1:]
-        non_bleach_norm=non_bleach_norm[1:]
-        df=pd.DataFrame([recovery_norm+non_bleach_norm,time_points+time_points,['recovery' for x in range(len(recovery_norm))]+['non bleached' for x in range(len(non_bleach_norm))]],index=['FRAP (norm intensities)','t (s)','method'])
+        recovery_bleach=recovery_bleach[1:]
+        non_bleach=non_bleach[1:]
+        bleach_mean=bleach_mean[1:]
+        nonbleach_mean=nonbleach_mean[1:]
+        bkg_mean=bkg_mean[1:]
+        df=pd.DataFrame([bleach_mean+bleach_mean,nonbleach_mean+nonbleach_mean,bkg_mean+bkg_mean,recovery_bleach+non_bleach,time_points+time_points,['recovery' for x in range(len(recovery_bleach))]+['non bleached' for x in range(len(non_bleach))]],index=['bl intensity','non bl intensity','bkg intensity','FRAP (norm intensities)','t (s)','method'])
         return df.T
-
 
 
 def plot_mask(raw,mask,mask2=None,mask3=None):
